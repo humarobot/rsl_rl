@@ -32,7 +32,7 @@ from abc import ABC, abstractmethod
 import torch
 from typing import Tuple, Union
 
-# minimal interface of the environment
+# minimal interface of the environment 抽象基类
 class VecEnv(ABC):
     num_envs: int
     num_obs: int

@@ -45,7 +45,7 @@ class OnPolicyRunner:
 
     def __init__(self,
                  env: VecEnv,
-                 train_cfg,
+                 train_cfg, #训练配置参数字典，来源于CfgPPO
                  log_dir=None,
                  device='cpu'):
 
@@ -57,16 +57,16 @@ class OnPolicyRunner:
         if self.env.num_privileged_obs is not None:
             num_critic_obs = self.env.num_privileged_obs 
         else:
-            num_critic_obs = self.env.num_obs
-        actor_critic_class = eval(self.cfg["policy_class_name"]) # ActorCritic
-        actor_critic: ActorCritic = actor_critic_class( self.env.num_obs,
-                                                        num_critic_obs,
-                                                        self.env.num_actions,
-                                                        **self.policy_cfg).to(self.device)
+            num_critic_obs = self.env.num_obs #执行这个
+        actor_critic_class = eval(self.cfg["policy_class_name"]) # 实际上就是ActorCritic,eval是执行字符串表达式，这里是相当于重命名的类
+        actor_critic: ActorCritic = actor_critic_class( self.env.num_obs, #来自与LeggedRobotCfg 235
+                                                        num_critic_obs, #235
+                                                        self.env.num_actions, #12
+                                                        **self.policy_cfg).to(self.device) #**是解压字典参数列表
         alg_class = eval(self.cfg["algorithm_class_name"]) # PPO
         self.alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg)
-        self.num_steps_per_env = self.cfg["num_steps_per_env"]
-        self.save_interval = self.cfg["save_interval"]
+        self.num_steps_per_env = self.cfg["num_steps_per_env"] #24 见legged_robot_config.py
+        self.save_interval = self.cfg["save_interval"] #50 每50个间隔，储存一次参数
 
         # init storage and model
         self.alg.init_storage(self.env.num_envs, self.num_steps_per_env, [self.env.num_obs], [self.env.num_privileged_obs], [self.env.num_actions])
@@ -76,11 +76,11 @@ class OnPolicyRunner:
         self.writer = None
         self.tot_timesteps = 0
         self.tot_time = 0
-        self.current_learning_iteration = 0
+        self.current_learning_iteration = 0 #这个值用于加载神经网络参数后继续迭代
 
         _, _ = self.env.reset()
     
-    def learn(self, num_learning_iterations, init_at_random_ep_len=False):
+    def learn(self, num_learning_iterations, init_at_random_ep_len=False): #num_learning_iterations=1500
         # initialize writer
         if self.log_dir is not None and self.writer is None:
             self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
@@ -99,18 +99,18 @@ class OnPolicyRunner:
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
         tot_iter = self.current_learning_iteration + num_learning_iterations
-        for it in range(self.current_learning_iteration, tot_iter):
+        for it in range(self.current_learning_iteration, tot_iter):#每一个迭代
             start = time.time()
             # Rollout
-            with torch.inference_mode():
-                for i in range(self.num_steps_per_env):
-                    actions = self.alg.act(obs, critic_obs)
-                    obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
+            with torch.inference_mode(): #用于获得更好的性能，内部的计算不能和autograd干涉
+                for i in range(self.num_steps_per_env):#每一个步
+                    actions = self.alg.act(obs, critic_obs)  #policy，输入环境观察，输出动作
+                    obs, privileged_obs, rewards, dones, infos = self.env.step(actions)  #env，输入动作，输出观察和奖励,1步动作,4步仿真
                     critic_obs = privileged_obs if privileged_obs is not None else obs
                     obs, critic_obs, rewards, dones = obs.to(self.device), critic_obs.to(self.device), rewards.to(self.device), dones.to(self.device)
-                    self.alg.process_env_step(rewards, dones, infos)
+                    self.alg.process_env_step(rewards, dones, infos) #记录每一步的信息到整个轨迹信息中
                     
-                    if self.log_dir is not None:
+                    if self.log_dir is not None: #默认是有路径的
                         # Book keeping
                         if 'episode' in infos:
                             ep_infos.append(infos['episode'])
@@ -121,25 +121,25 @@ class OnPolicyRunner:
                         lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
                         cur_reward_sum[new_ids] = 0
                         cur_episode_length[new_ids] = 0
-
+                #循环结束后，每一步的信息都放入了轨迹信息中
                 stop = time.time()
-                collection_time = stop - start
+                collection_time = stop - start #执行24步,收集数据总耗时 理论是24*4*0.005=0.48,仿真环境数量比较小是可以满足
 
                 # Learning step
                 start = stop
                 self.alg.compute_returns(critic_obs)
             
-            mean_value_loss, mean_surrogate_loss = self.alg.update()
+            mean_value_loss, mean_surrogate_loss = self.alg.update() #提取mini_batch并更新
             stop = time.time()
             learn_time = stop - start
             if self.log_dir is not None:
-                self.log(locals())
-            if it % self.save_interval == 0:
+                self.log(locals())#以字典形式返回当前所有的局部变量
+            if it % self.save_interval == 0: #每50个间隔，储存一次参数
                 self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
             ep_infos.clear()
         
         self.current_learning_iteration += num_learning_iterations
-        self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
+        self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration))) #最后储存一次参数
 
     def log(self, locs, width=80, pad=35):
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
@@ -227,7 +227,7 @@ class OnPolicyRunner:
         return loaded_dict['infos']
 
     def get_inference_policy(self, device=None):
-        self.alg.actor_critic.eval() # switch to evaluation mode (dropout for example)
+        self.alg.actor_critic.eval() # switch to evaluation mode (dropout for example)#评估模式和训练模式有什么区别
         if device is not None:
             self.alg.actor_critic.to(device)
-        return self.alg.actor_critic.act_inference
+        return self.alg.actor_critic.act_inference 

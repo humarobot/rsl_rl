@@ -91,7 +91,7 @@ class ActorCritic(nn.Module):
         # self.init_memory_weights(self.memory_a, 0.001, 0.)
         # self.init_memory_weights(self.memory_c, 0.001, 0.)
 
-    @staticmethod
+    @staticmethod #声明一个静态方法
     # not used at the moment
     def init_weights(sequential, scales):
         [torch.nn.init.orthogonal_(module.weight, gain=scales[idx]) for idx, module in
@@ -102,9 +102,9 @@ class ActorCritic(nn.Module):
         pass
 
     def forward(self):
-        raise NotImplementedError
+        raise NotImplementedError #手动抛出异常
     
-    @property
+    @property #方法转化为只读属性
     def action_mean(self):
         return self.distribution.mean
 
@@ -127,7 +127,7 @@ class ActorCritic(nn.Module):
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
-    def act_inference(self, observations):
+    def act_inference(self, observations): #使用policy网络推断action
         actions_mean = self.actor(observations)
         return actions_mean
 

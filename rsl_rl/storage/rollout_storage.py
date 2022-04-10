@@ -51,7 +51,7 @@ class RolloutStorage:
             self.__init__()
 
     def __init__(self, num_envs, num_transitions_per_env, obs_shape, privileged_obs_shape, actions_shape, device='cpu'):
-
+        '''num_transitions_per_env: num_steps_per_env=24'''
         self.device = device
 
         self.obs_shape = obs_shape
@@ -121,8 +121,8 @@ class RolloutStorage:
         self.step = 0
 
     def compute_returns(self, last_values, gamma, lam):
-        advantage = 0
-        for step in reversed(range(self.num_transitions_per_env)):
+        advantage = 0 #一个记录中间值的临时变量
+        for step in reversed(range(self.num_transitions_per_env)):# 24
             if step == self.num_transitions_per_env - 1:
                 next_values = last_values
             else:
@@ -134,7 +134,7 @@ class RolloutStorage:
 
         # Compute and normalize the advantages
         self.advantages = self.returns - self.values
-        self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)
+        self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)#？？
 
     def get_statistics(self):
         done = self.dones
@@ -181,7 +181,7 @@ class RolloutStorage:
                 old_sigma_batch = old_sigma[batch_idx]
                 yield obs_batch, critic_observations_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, \
                        old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (None, None), None
-
+                #yield把函数变成迭代器，迭代返回yield后的数据
     # for RNNs only
     def reccurent_mini_batch_generator(self, num_mini_batches, num_epochs=8):
 

@@ -36,7 +36,7 @@ from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
 
 class PPO:
-    actor_critic: ActorCritic
+    actor_critic: ActorCritic #类的属性，类似静态变量，冒号是用来说明变量的类型
     def __init__(self,
                  actor_critic,
                  num_learning_epochs=1,
@@ -84,14 +84,14 @@ class PPO:
     def test_mode(self):
         self.actor_critic.test()
     
-    def train_mode(self):
+    def train_mode(self):#设置模式有什么作用？
         self.actor_critic.train()
 
     def act(self, obs, critic_obs):
         if self.actor_critic.is_recurrent:
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
         # Compute the actions and values
-        self.transition.actions = self.actor_critic.act(obs).detach()
+        self.transition.actions = self.actor_critic.act(obs).detach()#返回的张量和原张量共享内存空间
         self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.actor_critic.action_mean.detach()
@@ -104,7 +104,7 @@ class PPO:
     def process_env_step(self, rewards, dones, infos):
         self.transition.rewards = rewards.clone()
         self.transition.dones = dones
-        # Bootstrapping on time outs
+        # Bootstrapping on time outs 这里处理了论文中说的两种终止情况
         if 'time_outs' in infos:
             self.transition.rewards += self.gamma * torch.squeeze(self.transition.values * infos['time_outs'].unsqueeze(1).to(self.device), 1)
 
@@ -169,12 +169,14 @@ class PPO:
                     value_loss = (returns_batch - value_batch).pow(2).mean()
 
                 loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
+                #这里两个损失为什么放在一起计算？如果policy和value函数通过一个神经网络共享参数，目标函数需要联合计算
+                # entropy作用是提高探索几率么？entropy bonus to ensure sufficient exploratoin
 
                 # Gradient step
                 self.optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
-                self.optimizer.step()
+                nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)#限制步长
+                self.optimizer.step()#torch的优化是朝着目标函数减小的方向进行
 
                 mean_value_loss += value_loss.item()
                 mean_surrogate_loss += surrogate_loss.item()
