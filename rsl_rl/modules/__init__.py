@@ -30,3 +30,4 @@
 
 from .actor_critic import ActorCritic
 from .actor_critic_recurrent import ActorCriticRecurrent
+from .vel_estimator import VelEstimator

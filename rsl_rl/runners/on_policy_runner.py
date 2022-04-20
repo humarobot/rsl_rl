@@ -37,7 +37,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torch
 
 from rsl_rl.algorithms import PPO
-from rsl_rl.modules import ActorCritic, ActorCriticRecurrent
+from rsl_rl.modules import ActorCritic, ActorCriticRecurrent,VelEstimator
 from rsl_rl.env import VecEnv
 
 
@@ -59,12 +59,13 @@ class OnPolicyRunner:
         else:
             num_critic_obs = self.env.num_obs #执行这个
         actor_critic_class = eval(self.cfg["policy_class_name"]) # 实际上就是ActorCritic,eval是执行字符串表达式，这里是相当于重命名的类
-        actor_critic: ActorCritic = actor_critic_class( self.env.num_obs, #来自与LeggedRobotCfg 235
-                                                        num_critic_obs, #235
+        actor_critic: ActorCritic = actor_critic_class( self.env.num_obs, #来自LeggedRobotCfg 48
+                                                        num_critic_obs, #48
                                                         self.env.num_actions, #12
                                                         **self.policy_cfg).to(self.device) #**是解压字典参数列表
+        vel_estimator=VelEstimator(42).to(self.device) #速度估计器模型 剔除期望速度指令
         alg_class = eval(self.cfg["algorithm_class_name"]) # PPO
-        self.alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg)
+        self.alg: PPO = alg_class(actor_critic, vel_estimator, device=self.device, **self.alg_cfg)
         self.num_steps_per_env = self.cfg["num_steps_per_env"] #24 见legged_robot_config.py
         self.save_interval = self.cfg["save_interval"] #50 每50个间隔，储存一次参数
 
@@ -87,6 +88,10 @@ class OnPolicyRunner:
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(self.env.episode_length_buf, high=int(self.env.max_episode_length))
         obs = self.env.get_observations()
+        # vel = self.alg.vel_estimator(obs).detach()
+        # obs = torch.cat((vel,obs),dim=-1)
+        # for p in ppo_runner.alg.vel_estimator.parameters()
+        #     print(p)
         privileged_obs = self.env.get_privileged_observations()
         critic_obs = privileged_obs if privileged_obs is not None else obs
         obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
@@ -104,8 +109,11 @@ class OnPolicyRunner:
             # Rollout
             with torch.inference_mode(): #用于获得更好的性能，内部的计算不能和autograd干涉
                 for i in range(self.num_steps_per_env):#每一个步
-                    actions = self.alg.act(obs, critic_obs)  #policy，输入环境观察，输出动作
+                    body_vel = self.env.get_body_velocity()
+                    actions = self.alg.act(obs, critic_obs, body_vel)  #policy，输入环境观察，输出动作
                     obs, privileged_obs, rewards, dones, infos = self.env.step(actions)  #env，输入动作，输出观察和奖励,1步动作,4步仿真
+                    # vel = self.alg.vel_estimator(obs).detach()
+                    # obs = torch.cat((vel,obs),dim=-1)
                     critic_obs = privileged_obs if privileged_obs is not None else obs
                     obs, critic_obs, rewards, dones = obs.to(self.device), critic_obs.to(self.device), rewards.to(self.device), dones.to(self.device)
                     self.alg.process_env_step(rewards, dones, infos) #记录每一步的信息到整个轨迹信息中
@@ -129,7 +137,8 @@ class OnPolicyRunner:
                 start = stop
                 self.alg.compute_returns(critic_obs)
             
-            mean_value_loss, mean_surrogate_loss = self.alg.update() #提取mini_batch并更新
+            
+            mean_value_loss, mean_surrogate_loss, mean_vel_loss = self.alg.update() #提取mini_batch并更新
             stop = time.time()
             learn_time = stop - start
             if self.log_dir is not None:
@@ -163,6 +172,7 @@ class OnPolicyRunner:
         mean_std = self.alg.actor_critic.std.mean()
         fps = int(self.num_steps_per_env * self.env.num_envs / (locs['collection_time'] + locs['learn_time']))
 
+        self.writer.add_scalar('Loss/value_velocity',locs['mean_vel_loss'],locs['it'])
         self.writer.add_scalar('Loss/value_function', locs['mean_value_loss'], locs['it'])
         self.writer.add_scalar('Loss/surrogate', locs['mean_surrogate_loss'], locs['it'])
         self.writer.add_scalar('Loss/learning_rate', self.alg.learning_rate, locs['it'])
@@ -185,6 +195,7 @@ class OnPolicyRunner:
                             'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                           f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                           f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
+                          f"""{'Velocity Estimator loss:':>{pad}} {locs['mean_vel_loss']:.4f}\n"""
                           f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
                           f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
                           f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n""")
@@ -197,6 +208,7 @@ class OnPolicyRunner:
                             'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                           f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                           f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
+                          f"""{'Velocity Estimator loss:':>{pad}} {locs['mean_vel_loss']:.4f}\n"""
                           f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n""")
                         #   f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
                         #   f"""{'Mean episode length/episode:':>{pad}} {locs['mean_trajectory_length']:.2f}\n""")
@@ -214,6 +226,7 @@ class OnPolicyRunner:
         torch.save({
             'model_state_dict': self.alg.actor_critic.state_dict(),
             'optimizer_state_dict': self.alg.optimizer.state_dict(),
+            'estimator_state_dict': self.alg.vel_estimator.state_dict(),
             'iter': self.current_learning_iteration,
             'infos': infos,
             }, path)
@@ -221,6 +234,7 @@ class OnPolicyRunner:
     def load(self, path, load_optimizer=True):
         loaded_dict = torch.load(path)
         self.alg.actor_critic.load_state_dict(loaded_dict['model_state_dict'])
+        self.alg.vel_estimator.load_state_dict(loaded_dict['estimator_state_dict'])
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
         self.current_learning_iteration = loaded_dict['iter']
@@ -231,3 +245,10 @@ class OnPolicyRunner:
         if device is not None:
             self.alg.actor_critic.to(device)
         return self.alg.actor_critic.act_inference 
+
+    def get_inference_estimator(self,device=None):
+        self.alg.vel_estimator.eval()
+        if device is not None:
+            self.alg.vel_estimator.to(device)
+        return self.alg.vel_estimator.eval_inference
+

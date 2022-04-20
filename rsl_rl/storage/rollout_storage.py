@@ -37,6 +37,7 @@ class RolloutStorage:
     class Transition:
         def __init__(self):
             self.observations = None
+            self.body_vel = None
             self.critic_observations = None
             self.actions = None
             self.rewards = None
@@ -60,6 +61,7 @@ class RolloutStorage:
 
         # Core
         self.observations = torch.zeros(num_transitions_per_env, num_envs, *obs_shape, device=self.device)
+        self.body_vel = torch.zeros(num_transitions_per_env, num_envs, 3, device=self.device)
         if privileged_obs_shape[0] is not None:
             self.privileged_observations = torch.zeros(num_transitions_per_env, num_envs, *privileged_obs_shape, device=self.device)
         else:
@@ -89,6 +91,7 @@ class RolloutStorage:
         if self.step >= self.num_transitions_per_env:
             raise AssertionError("Rollout buffer overflow")
         self.observations[self.step].copy_(transition.observations)
+        self.body_vel[self.step].copy_(transition.body_vel)
         if self.privileged_observations is not None: self.privileged_observations[self.step].copy_(transition.critic_observations)
         self.actions[self.step].copy_(transition.actions)
         self.rewards[self.step].copy_(transition.rewards.view(-1, 1))
@@ -150,13 +153,14 @@ class RolloutStorage:
         indices = torch.randperm(num_mini_batches*mini_batch_size, requires_grad=False, device=self.device)
 
         observations = self.observations.flatten(0, 1)
+        body_vel = self.body_vel.flatten(0, 1)
         if self.privileged_observations is not None:
             critic_observations = self.privileged_observations.flatten(0, 1)
         else:
             critic_observations = observations
 
         actions = self.actions.flatten(0, 1)
-        values = self.values.flatten(0, 1)
+        values = self.values.flatten(0, 1)  
         returns = self.returns.flatten(0, 1)
         old_actions_log_prob = self.actions_log_prob.flatten(0, 1)
         advantages = self.advantages.flatten(0, 1)
@@ -171,6 +175,7 @@ class RolloutStorage:
                 batch_idx = indices[start:end]
 
                 obs_batch = observations[batch_idx]
+                body_batch = body_vel[batch_idx] #！这里之前两个变量名一样，出错
                 critic_observations_batch = critic_observations[batch_idx]
                 actions_batch = actions[batch_idx]
                 target_values_batch = values[batch_idx]
@@ -179,7 +184,7 @@ class RolloutStorage:
                 advantages_batch = advantages[batch_idx]
                 old_mu_batch = old_mu[batch_idx]
                 old_sigma_batch = old_sigma[batch_idx]
-                yield obs_batch, critic_observations_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, \
+                yield obs_batch,body_batch, critic_observations_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, \
                        old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (None, None), None
                 #yield把函数变成迭代器，迭代返回yield后的数据
     # for RNNs only

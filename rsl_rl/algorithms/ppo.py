@@ -32,13 +32,14 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from rsl_rl.modules import ActorCritic
+from rsl_rl.modules import ActorCritic,VelEstimator
 from rsl_rl.storage import RolloutStorage
 
 class PPO:
     actor_critic: ActorCritic #类的属性，类似静态变量，冒号是用来说明变量的类型
     def __init__(self,
                  actor_critic,
+                 vel_estimator,
                  num_learning_epochs=1,
                  num_mini_batches=1,
                  clip_param=0.2,
@@ -67,6 +68,12 @@ class PPO:
         self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=learning_rate)
         self.transition = RolloutStorage.Transition()
 
+        # Vel Estimator
+        self.vel_estimator:VelEstimator=vel_estimator
+        self.vel_estimator.to(self.device)
+        self.loss_vel_fn=nn.MSELoss()
+        self.optimizer_v = optim.SGD(self.vel_estimator.parameters(),lr=learning_rate)
+
         # PPO parameters
         self.clip_param = clip_param
         self.num_learning_epochs = num_learning_epochs
@@ -87,7 +94,7 @@ class PPO:
     def train_mode(self):#设置模式有什么作用？
         self.actor_critic.train()
 
-    def act(self, obs, critic_obs):
+    def act(self, obs, critic_obs, body_vel):
         if self.actor_critic.is_recurrent:
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
         # Compute the actions and values
@@ -98,8 +105,11 @@ class PPO:
         self.transition.action_sigma = self.actor_critic.action_std.detach()
         # need to record obs and critic_obs before env.step()
         self.transition.observations = obs
+        self.transition.body_vel = body_vel
         self.transition.critic_observations = critic_obs
         return self.transition.actions
+        # return self.actor_critic.act_inference(obs).detach()
+        
     
     def process_env_step(self, rewards, dones, infos):
         self.transition.rewards = rewards.clone()
@@ -120,11 +130,13 @@ class PPO:
     def update(self):
         mean_value_loss = 0
         mean_surrogate_loss = 0
+        mean_vel_loss = 0 
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
-        for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
+        for obs_batch,body_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch,\
+            returns_batch, old_actions_log_prob_batch, \
             old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch in generator:
 
 
@@ -134,6 +146,16 @@ class PPO:
                 mu_batch = self.actor_critic.action_mean
                 sigma_batch = self.actor_critic.action_std
                 entropy_batch = self.actor_critic.entropy
+
+                #更新速度估计器的参数
+                input_e=torch.cat((obs_batch[:,3:9],obs_batch[:,12:]),dim=-1)
+                pred=self.vel_estimator(input_e)
+                loss_v=self.loss_vel_fn(pred,body_batch)
+                # print(self.loss_vel_fn(pred[1],body_batch[1]))
+                self.optimizer_v.zero_grad()
+                loss_v.backward()
+                self.optimizer_v.step()
+                mean_vel_loss += loss_v.item()
 
                 # KL
                 if self.desired_kl != None and self.schedule == 'adaptive':
@@ -184,6 +206,7 @@ class PPO:
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
+        mean_vel_loss /= num_updates
         self.storage.clear()
 
-        return mean_value_loss, mean_surrogate_loss
+        return mean_value_loss, mean_surrogate_loss,mean_vel_loss
