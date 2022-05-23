@@ -59,8 +59,8 @@ class OnPolicyRunner:
         else:
             num_critic_obs = self.env.num_obs #执行这个
         actor_critic_class = eval(self.cfg["policy_class_name"]) # 实际上就是ActorCritic,eval是执行字符串表达式，这里是相当于重命名的类
-        actor_critic: ActorCritic = actor_critic_class( self.env.num_obs, #来自与LeggedRobotCfg 235
-                                                        num_critic_obs, #235
+        actor_critic: ActorCritic = actor_critic_class( self.env.num_obs, #来自与LeggedRobotCfg 
+                                                        num_critic_obs, 
                                                         self.env.num_actions, #12
                                                         **self.policy_cfg).to(self.device) #**是解压字典参数列表
         alg_class = eval(self.cfg["algorithm_class_name"]) # PPO
