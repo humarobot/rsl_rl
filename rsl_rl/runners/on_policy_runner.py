@@ -88,7 +88,9 @@ class OnPolicyRunner:
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(self.env.episode_length_buf, high=int(self.env.max_episode_length))
         obs = self.env.get_observations()
-        # vel = self.alg.vel_estimator(obs).detach()
+        input_e = torch.cat((obs[:,3:9],obs[:,12:]),dim=-1)
+        vel = self.alg.vel_estimator(input_e).detach() #使用速度估计器的观测
+        obs = torch.cat((vel,obs[:,3:]),dim=-1) #使用速度估计器的观测
         # obs = torch.cat((vel,obs),dim=-1)
         # for p in ppo_runner.alg.vel_estimator.parameters()
         #     print(p)
@@ -112,7 +114,9 @@ class OnPolicyRunner:
                     body_vel = self.env.get_body_velocity()
                     actions = self.alg.act(obs, critic_obs, body_vel)  #policy，输入环境观察，输出动作
                     obs, privileged_obs, rewards, dones, infos = self.env.step(actions)  #env，输入动作，输出观察和奖励,1步动作,4步仿真
-                    # vel = self.alg.vel_estimator(obs).detach()
+                    input_e = torch.cat((obs[:,3:9],obs[:,12:]),dim=-1)
+                    vel = self.alg.vel_estimator(input_e).detach() #使用速度估计器的观测
+                    obs = torch.cat((vel,obs[:,3:]),dim=-1) #使用速度估计器的观测
                     # obs = torch.cat((vel,obs),dim=-1)
                     critic_obs = privileged_obs if privileged_obs is not None else obs
                     obs, critic_obs, rewards, dones = obs.to(self.device), critic_obs.to(self.device), rewards.to(self.device), dones.to(self.device)
